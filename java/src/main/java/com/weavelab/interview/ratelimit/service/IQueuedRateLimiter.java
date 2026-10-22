@@ -11,22 +11,22 @@ import java.util.function.Consumer;
  * settle pending work at most once; close settles it as STOPPED. Observers run outside the state
  * lock, with ENQUEUED delivered before its terminal event.
  */
-public interface QueuedRateLimiter extends RateLimiter {
+public interface IQueuedRateLimiter extends IRateLimiter {
     /**
      * Attempts immediate admission or retains the request for later completion.
      *
      * @param observer ordered diagnostic callback for this request
      * @return completion and cancellation handle, possibly already settled
      */
-    Submission submit(Consumer<RateLimitDecisionEvent> observer);
+    ISubmission submit(Consumer<RateLimitDecisionEvent> observer);
 
     /**
      * Submits an admission attempt without observing diagnostic transitions.
      *
      * @return completion and cancellation handle
      */
-    default Submission submit() {
-        LoggerFactory.getLogger(QueuedRateLimiter.class)
+    default ISubmission submit() {
+        LoggerFactory.getLogger(IQueuedRateLimiter.class)
                 .info("event=method_invocation method=QueuedRateLimiter.submit()");
         return submit(event -> {});
     }

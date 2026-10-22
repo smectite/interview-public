@@ -2,8 +2,8 @@ package com.weavelab.interview.ratelimit.strategy.impl;
 
 import static com.weavelab.interview.ratelimit.strategy.model.RateLimitDecision.Outcome.*;
 
-import com.weavelab.interview.ratelimit.strategy.QueuedRateLimiter;
-import com.weavelab.interview.ratelimit.strategy.Submission;
+import com.weavelab.interview.ratelimit.strategy.IQueuedRateLimiter;
+import com.weavelab.interview.ratelimit.strategy.ISubmission;
 import com.weavelab.interview.ratelimit.strategy.model.RateLimitDecision;
 import com.weavelab.interview.ratelimit.strategy.model.RateLimitDecisionEvent;
 
@@ -49,7 +49,7 @@ import java.util.function.LongSupplier;
  * owned scheduler wakes only while requests wait, at the next token or earliest expiration. Servlet
  * suspension and dispatch belong to the HTTP adapter.
  */
-public final class BoundedQueueRateLimiter implements QueuedRateLimiter {
+public final class BoundedQueueRateLimiter implements IQueuedRateLimiter {
     private static final Logger LOG = LoggerFactory.getLogger(BoundedQueueRateLimiter.class);
 
     // Maximum stored tokens and maximum waiting entries (two independent bounds).
@@ -100,7 +100,7 @@ public final class BoundedQueueRateLimiter implements QueuedRateLimiter {
      * only their terminal event. Retry-after for a full queue is advisory and reflects the next
      * token deadline, not a reservation for the rejected caller.
      */
-    public Submission submit(Consumer<RateLimitDecisionEvent> observer) {
+    public ISubmission submit(Consumer<RateLimitDecisionEvent> observer) {
         LOG.info("event=method_invocation method=BoundedQueueRateLimiter.submit");
         List<Runnable> notifications = new ArrayList<>();
         Entry entry;
@@ -128,6 +128,7 @@ public final class BoundedQueueRateLimiter implements QueuedRateLimiter {
             }
         }
         notifications.forEach(Runnable::run);
+
         return entry;
     }
 
@@ -140,9 +141,11 @@ public final class BoundedQueueRateLimiter implements QueuedRateLimiter {
             task.cancel(false);
             task = null;
         }
-        if (queue.isEmpty() || closed) return;
+        if (queue.isEmpty() || closed)
+            return;
         long delay = nextTokenDelay(now);
-        for (Entry e : queue) delay = Math.min(delay, Math.max(0, timeout - (now - e.enqueued)));
+        for (Entry e : queue)
+            delay = Math.min(delay, Math.max(0, timeout - (now - e.enqueued)));
         try {
             task = scheduler.schedule(this::tick, delay, TimeUnit.NANOSECONDS);
         } catch (RejectedExecutionException failure) {
@@ -200,7 +203,8 @@ public final class BoundedQueueRateLimiter implements QueuedRateLimiter {
     private void tick() {
         List<Runnable> notifications = new ArrayList<>();
         synchronized (this) {
-            if (closed) return;
+            if (closed)
+                return;
             long now = ticker.getAsLong();
             processWaiting(now, notifications);
             reschedule(now, notifications);
@@ -283,7 +287,7 @@ public final class BoundedQueueRateLimiter implements QueuedRateLimiter {
     }
 
     /** One request's enqueue time, completion handle and ordered notification mailbox. */
-    private final class Entry implements Submission {
+    private final class Entry implements ISubmission {
         final long enqueued;
         final Consumer<RateLimitDecisionEvent> observer;
         final CompletableFuture<RateLimitDecision> future = new CompletableFuture<>();
@@ -296,10 +300,12 @@ public final class BoundedQueueRateLimiter implements QueuedRateLimiter {
         // Multiple threads may publish state transitions, but observers see them in order.
         void deliver() {
             do {
-                if (!delivering.compareAndSet(false, true)) return;
+                if (!delivering.compareAndSet(false, true))
+                    return;
                 try {
                     Runnable next;
-                    while ((next = deliveries.poll()) != null) next.run();
+                    while ((next = deliveries.poll()) != null)
+                        next.run();
                 } finally {
                     delivering.set(false);
                 }

@@ -10,7 +10,7 @@ import java.util.concurrent.CompletionStage;
  * Handle for one admission attempt, which may already have completed. Cancellation and timeout
  * affect pending work only, never undoing a granted admission.
  */
-public interface Submission {
+public interface ISubmission {
     /**
      * Observes the one terminal decision without exposing its internally writable future.
      *
@@ -26,7 +26,7 @@ public interface Submission {
      * distinguish deadlines override it to report TIMED_OUT.
      */
     default void timeout() {
-        LoggerFactory.getLogger(Submission.class)
+        LoggerFactory.getLogger(ISubmission.class)
                 .info("event=method_invocation method=Submission.timeout()");
         cancel();
     }

@@ -2,7 +2,7 @@ package com.weavelab.interview.ratelimit.strategy.impl;
 
 import static com.weavelab.interview.ratelimit.strategy.model.RateLimitDecision.Outcome.*;
 
-import com.weavelab.interview.ratelimit.strategy.ImmediateRateLimiter;
+import com.weavelab.interview.ratelimit.strategy.IImmediateRateLimiter;
 import com.weavelab.interview.ratelimit.strategy.model.RateLimitDecision;
 import com.weavelab.interview.ratelimit.strategy.model.RateLimitDecisionEvent;
 
@@ -33,7 +33,7 @@ import java.util.function.LongSupplier;
  * after releasing it. Rejections add no debt; idle time never creates credit beyond an empty
  * bucket. Admission limits starts, not concurrent execution.
  */
-public final class LazyDrainingRateLimiter implements ImmediateRateLimiter {
+public final class LazyDrainingRateLimiter implements IImmediateRateLimiter {
     private static final Logger LOG = LoggerFactory.getLogger(LazyDrainingRateLimiter.class);
 
     // Both values are nanoseconds: cost per admission and maximum stored drain-time debt.

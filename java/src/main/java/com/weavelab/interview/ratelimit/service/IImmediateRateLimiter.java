@@ -12,7 +12,7 @@ import java.util.function.Consumer;
  * immutable snapshots outside the state lock before the call returns; observer runtime exceptions
  * do not change admission. Attempts after close return STOPPED.
  */
-public interface ImmediateRateLimiter extends RateLimiter {
+public interface IImmediateRateLimiter extends IRateLimiter {
     /**
      * Attempts immediate admission.
      *
@@ -27,7 +27,7 @@ public interface ImmediateRateLimiter extends RateLimiter {
      * @return terminal admission decision
      */
     default RateLimitDecision tryAcquire() {
-        LoggerFactory.getLogger(ImmediateRateLimiter.class)
+        LoggerFactory.getLogger(IImmediateRateLimiter.class)
                 .info("event=method_invocation method=ImmediateRateLimiter.tryAcquire()");
         return tryAcquire(event -> {});
     }

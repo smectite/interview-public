@@ -1,6 +1,6 @@
 package com.weavelab.interview.ratelimit.strategy.impl;
 
-import com.weavelab.interview.ratelimit.strategy.ImmediateRateLimiter;
+import com.weavelab.interview.ratelimit.strategy.IImmediateRateLimiter;
 import com.weavelab.interview.ratelimit.strategy.model.RateLimitDecision;
 import com.weavelab.interview.ratelimit.strategy.model.RateLimitDecision.Outcome;
 import com.weavelab.interview.ratelimit.strategy.model.RateLimitDecisionEvent;
@@ -17,7 +17,7 @@ import java.util.function.Consumer;
 import java.util.function.LongSupplier;
 
 /** Exact accepted-request log for the rolling interval (now - period, now]. */
-public final class SlidingWindowRateLimiter implements ImmediateRateLimiter {
+public final class SlidingWindowRateLimiter implements IImmediateRateLimiter {
     private static final Logger LOG = LoggerFactory.getLogger(SlidingWindowRateLimiter.class);
 
     private final int requests;
