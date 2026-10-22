@@ -1,6 +1,6 @@
 package com.weavelab.interview.ratelimit;
 
-import com.weavelab.interview.ratelimit.strategy.RateLimiter;
+import com.weavelab.interview.ratelimit.service.IRateLimiter;
 
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
@@ -28,14 +28,14 @@ import java.util.UUID;
 @Order(0)
 public final class RateLimitFilter extends OncePerRequestFilter {
     private static final Logger LOG = LoggerFactory.getLogger(RateLimitFilter.class);
-    private final RateLimiter limiter;
+    private final IRateLimiter limiter;
     private final Clock clock;
 
     /**
      * @param limiter process-wide bucket shared by every client and route
      */
     @Autowired
-    public RateLimitFilter(RateLimiter limiter) {
+    public RateLimitFilter(IRateLimiter limiter) {
         this(limiter, Clock.systemUTC());
     }
 
@@ -45,7 +45,7 @@ public final class RateLimitFilter extends OncePerRequestFilter {
      * @param limiter process-wide bucket
      * @param clock wall-clock source for request timestamps only
      */
-    public RateLimitFilter(RateLimiter limiter, Clock clock) {
+    public RateLimitFilter(IRateLimiter limiter, Clock clock) {
         LOG.info("event=method_invocation method=RateLimitFilter.<init>");
         this.limiter = limiter;
         this.clock = clock;

@@ -14,7 +14,7 @@ import com.weavelab.interview.auth.AuthInterceptor;
 import com.weavelab.interview.config.RateLimitProperties;
 import com.weavelab.interview.config.WebConfig;
 import com.weavelab.interview.ratelimit.RateLimitFilter;
-import com.weavelab.interview.ratelimit.strategy.impl.LazyDrainingRateLimiter;
+import com.weavelab.interview.ratelimit.service.impl.LazyDrainingRateLimiter;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.autoconfigure.EnableAutoConfiguration;

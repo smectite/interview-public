@@ -1,8 +1,8 @@
-package com.weavelab.interview.ratelimit.strategy.impl;
+package com.weavelab.interview.ratelimit.service.impl;
 
 import com.weavelab.interview.config.RateLimitProperties;
-import com.weavelab.interview.ratelimit.strategy.RateLimiter;
-import com.weavelab.interview.ratelimit.strategy.model.RateLimitDecision;
+import com.weavelab.interview.ratelimit.service.IRateLimiter;
+import com.weavelab.interview.ratelimit.service.model.RateLimitDecision;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -21,7 +21,7 @@ import java.util.function.LongSupplier;
  * bursts, not a strict rolling-minute quota.
  */
 @Component
-public final class LazyDrainingRateLimiter implements RateLimiter {
+public final class LazyDrainingRateLimiter implements IRateLimiter {
     private static final Logger LOG = LoggerFactory.getLogger(LazyDrainingRateLimiter.class);
     private final long interval, maximumDebt;
     private final LongSupplier ticker;

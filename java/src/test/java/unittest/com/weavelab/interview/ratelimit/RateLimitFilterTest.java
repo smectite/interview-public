@@ -11,9 +11,9 @@ import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
 
 import com.weavelab.interview.ratelimit.RateLimitFilter;
-import com.weavelab.interview.ratelimit.strategy.RateLimiter;
-import com.weavelab.interview.ratelimit.strategy.impl.LazyDrainingRateLimiter;
-import com.weavelab.interview.ratelimit.strategy.model.RateLimitDecision;
+import com.weavelab.interview.ratelimit.service.IRateLimiter;
+import com.weavelab.interview.ratelimit.service.impl.LazyDrainingRateLimiter;
+import com.weavelab.interview.ratelimit.service.model.RateLimitDecision;
 
 import jakarta.servlet.DispatcherType;
 import jakarta.servlet.http.HttpServletResponse;
@@ -220,7 +220,7 @@ class RateLimitFilterTest {
     @Test
     void acceptsLimiterInterfaceWithoutConcreteImplementation() throws Exception {
         var acquisitions = new AtomicInteger();
-        RateLimiter limiter =
+        IRateLimiter limiter =
                 () -> {
                     acquisitions.incrementAndGet();
                     return new RateLimitDecision(

@@ -2,7 +2,7 @@ package unittest.com.weavelab.interview.ratelimit.strategy.impl;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-import com.weavelab.interview.ratelimit.strategy.impl.LazyDrainingRateLimiter;
+import com.weavelab.interview.ratelimit.service.impl.LazyDrainingRateLimiter;
 
 import org.junit.jupiter.api.Test;
 

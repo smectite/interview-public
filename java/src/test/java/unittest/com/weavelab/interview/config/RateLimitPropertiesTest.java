@@ -3,8 +3,8 @@ package unittest.com.weavelab.interview.config;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.weavelab.interview.config.RateLimitProperties;
-import com.weavelab.interview.ratelimit.strategy.RateLimiter;
-import com.weavelab.interview.ratelimit.strategy.impl.LazyDrainingRateLimiter;
+import com.weavelab.interview.ratelimit.service.IRateLimiter;
+import com.weavelab.interview.ratelimit.service.impl.LazyDrainingRateLimiter;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -50,7 +50,7 @@ class RateLimitPropertiesTest {
                     assertThat(properties.getCapacity()).isEqualTo(10);
                     assertThat(properties.getRequests()).isEqualTo(10);
                     assertThat(properties.getPeriod()).isEqualTo(Duration.ofMinutes(1));
-                    var limiter = context.getBean(RateLimiter.class);
+                    var limiter = context.getBean(IRateLimiter.class);
                     assertThat(limiter).isSameAs(context.getBean(LazyDrainingRateLimiter.class));
                     for (int i = 0; i < 10; i++)
                         assertThat(limiter.tryAcquire().allowed()).isTrue();
@@ -80,7 +80,7 @@ class RateLimitPropertiesTest {
                             var properties = context.getBean(RateLimitProperties.class);
                             assertThat(properties.getCapacity()).isEqualTo(3);
                             assertThat(properties.interval()).isEqualTo(Duration.ofMillis(500));
-                            var limiter = context.getBean(RateLimiter.class);
+                            var limiter = context.getBean(IRateLimiter.class);
                             assertThat(limiter)
                                     .isSameAs(context.getBean(LazyDrainingRateLimiter.class));
                             for (int i = 0; i < 3; i++)
