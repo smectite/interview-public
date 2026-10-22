@@ -4,8 +4,8 @@ import static com.weavelab.interview.ratelimit.RateLimitResponseWriter.unavailab
 import static com.weavelab.interview.ratelimit.RateLimitResponseWriter.writeDecision;
 
 import com.weavelab.interview.config.RateLimitProperties;
-import com.weavelab.interview.ratelimit.strategy.model.RateLimitDecision;
-import com.weavelab.interview.ratelimit.strategy.model.RateLimitDecisionEvent;
+import com.weavelab.interview.ratelimit.service.model.RateLimitDecision;
+import com.weavelab.interview.ratelimit.service.model.RateLimitDecisionEvent;
 
 import jakarta.servlet.DispatcherType;
 import jakarta.servlet.FilterChain;

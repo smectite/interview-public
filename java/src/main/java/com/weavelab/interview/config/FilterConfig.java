@@ -4,9 +4,9 @@ import com.weavelab.interview.auth.AuthFilter;
 import com.weavelab.interview.ratelimit.ImmediateRateLimitFilter;
 import com.weavelab.interview.ratelimit.QueuedRateLimitFilter;
 import com.weavelab.interview.ratelimit.RateLimitFilter;
-import com.weavelab.interview.ratelimit.strategy.ImmediateRateLimiter;
-import com.weavelab.interview.ratelimit.strategy.QueuedRateLimiter;
-import com.weavelab.interview.ratelimit.strategy.RateLimiter;
+import com.weavelab.interview.ratelimit.service.IImmediateRateLimiter;
+import com.weavelab.interview.ratelimit.service.IQueuedRateLimiter;
+import com.weavelab.interview.ratelimit.service.IRateLimiter;
 
 import jakarta.servlet.DispatcherType;
 import jakarta.servlet.Filter;
@@ -25,7 +25,7 @@ import java.time.Clock;
 public class FilterConfig {
     @Bean
     FilterRegistrationBean<RateLimitFilter> rateLimitFilterRegistration(
-            RateLimiter limiter, RateLimitProperties properties) {
+            IRateLimiter limiter, RateLimitProperties properties) {
         FilterRegistrationBean<RateLimitFilter> registration =
                 new FilterRegistrationBean<>(rateLimitFilter(limiter, properties));
         register(registration, 0);
@@ -39,10 +39,10 @@ public class FilterConfig {
         return registration;
     }
 
-    private RateLimitFilter rateLimitFilter(RateLimiter limiter, RateLimitProperties properties) {
-        if (limiter instanceof ImmediateRateLimiter immediate) {
+    private RateLimitFilter rateLimitFilter(IRateLimiter limiter, RateLimitProperties properties) {
+        if (limiter instanceof IImmediateRateLimiter immediate) {
             return new ImmediateRateLimitFilter(immediate, properties, Clock.systemUTC());
-        } else if (limiter instanceof QueuedRateLimiter queued) {
+        } else if (limiter instanceof IQueuedRateLimiter queued) {
             return new QueuedRateLimitFilter(queued, properties, Clock.systemUTC());
         }
 

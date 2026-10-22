@@ -124,3 +124,31 @@ APP_STARTUP_CHECK=false make seed
 ```
 
 `make reset` deletes the `data` directory; do not use it against data you want to retain.
+
+## Test directory layout
+
+Unit and integration categories sit directly under `src/test/java`, with production package folders mirrored beneath each category. Class names are unchanged, and Java package declarations match the complete directory path (for example, `unittest.com.weavelab.interview.config`).
+
+```text
+src/test/java/
+  unittest/com/weavelab/interview/
+    config/RateLimitConfigTest.java
+    ratelimit/
+      RateLimitFilterTest.java
+      RateLimitLoggingTest.java
+      strategy/impl/
+        BoundedQueueTokenTest.java
+        ImmediateRateLimiterTest.java
+        RateLimitDiagnosticsTest.java
+        RateLimiterCoreTest.java
+        SlidingWindowRateLimiterTest.java
+        ManualScheduler.java
+  integrationtest/com/weavelab/interview/
+    ApplicationTests.java
+    ratelimit/
+      DefaultHttpTest.java
+      QueueHttpTest.java
+      SlidingWindowHttpTest.java
+```
+
+`ManualScheduler` is shared unit-test support. Configuration binding tests remain in `unittest`; tests that start an embedded server or the full application belong to `integrationtest`. Both categories continue to run with `./mvnw test`; Maven execution phases are unchanged.

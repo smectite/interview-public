@@ -1,8 +1,8 @@
 package com.weavelab.interview.ratelimit;
 
 import com.weavelab.interview.config.RateLimitProperties;
-import com.weavelab.interview.ratelimit.strategy.ImmediateRateLimiter;
-import com.weavelab.interview.ratelimit.strategy.model.RateLimitDecisionEvent;
+import com.weavelab.interview.ratelimit.service.IImmediateRateLimiter;
+import com.weavelab.interview.ratelimit.service.model.RateLimitDecisionEvent;
 
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
@@ -20,11 +20,11 @@ import java.util.function.Consumer;
 public final class ImmediateRateLimitFilter extends RateLimitFilter {
     private static final Logger LOG = LoggerFactory.getLogger(ImmediateRateLimitFilter.class);
 
-    private final ImmediateRateLimiter limiter;
+    private final IImmediateRateLimiter limiter;
 
     /** Creates the configured adapter or value using the supplied dependencies. */
     public ImmediateRateLimitFilter(
-            ImmediateRateLimiter limiter, RateLimitProperties properties, Clock clock) {
+            IImmediateRateLimiter limiter, RateLimitProperties properties, Clock clock) {
         super(properties, clock);
         LOG.info("event=method_invocation method=ImmediateRateLimitFilter.<init>");
         this.limiter = limiter;

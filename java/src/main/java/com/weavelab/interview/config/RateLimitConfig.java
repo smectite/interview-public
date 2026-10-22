@@ -1,9 +1,9 @@
 package com.weavelab.interview.config;
 
-import com.weavelab.interview.ratelimit.strategy.RateLimiter;
-import com.weavelab.interview.ratelimit.strategy.impl.BoundedQueueRateLimiter;
-import com.weavelab.interview.ratelimit.strategy.impl.LazyDrainingRateLimiter;
-import com.weavelab.interview.ratelimit.strategy.impl.SlidingWindowRateLimiter;
+import com.weavelab.interview.ratelimit.service.IRateLimiter;
+import com.weavelab.interview.ratelimit.service.impl.BoundedQueueRateLimiter;
+import com.weavelab.interview.ratelimit.service.impl.LazyDrainingRateLimiter;
+import com.weavelab.interview.ratelimit.service.impl.SlidingWindowRateLimiter;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -41,7 +41,7 @@ public class RateLimitConfig {
 
     @Bean(destroyMethod = "close")
     /** Selects the shared limiter implementation once for this application process. */
-    public RateLimiter rateLimiter(
+    public IRateLimiter rateLimiter(
             RateLimitProperties properties, ScheduledThreadPoolExecutor rateLimitScheduler) {
         LOG.info("event=method_invocation method=RateLimitConfig.rateLimiter");
         LongSupplier ticker = System::nanoTime;

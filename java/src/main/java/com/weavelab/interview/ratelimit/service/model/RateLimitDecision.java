@@ -1,4 +1,4 @@
-package com.weavelab.interview.ratelimit.strategy.model;
+package com.weavelab.interview.ratelimit.service.model;
 
 import java.time.Duration;
 

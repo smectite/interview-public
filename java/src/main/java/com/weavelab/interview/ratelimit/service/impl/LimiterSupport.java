@@ -1,7 +1,7 @@
-package com.weavelab.interview.ratelimit.strategy.impl;
+package com.weavelab.interview.ratelimit.service.impl;
 
-import com.weavelab.interview.ratelimit.strategy.model.RateLimitDecision;
-import com.weavelab.interview.ratelimit.strategy.model.RateLimitDecisionEvent;
+import com.weavelab.interview.ratelimit.service.model.RateLimitDecision;
+import com.weavelab.interview.ratelimit.service.model.RateLimitDecisionEvent;
 
 import java.time.Duration;
 import java.util.Map;

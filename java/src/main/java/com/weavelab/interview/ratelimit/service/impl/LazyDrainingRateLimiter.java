@@ -1,10 +1,10 @@
-package com.weavelab.interview.ratelimit.strategy.impl;
+package com.weavelab.interview.ratelimit.service.impl;
 
-import static com.weavelab.interview.ratelimit.strategy.model.RateLimitDecision.Outcome.*;
+import static com.weavelab.interview.ratelimit.service.model.RateLimitDecision.Outcome.*;
 
-import com.weavelab.interview.ratelimit.strategy.IImmediateRateLimiter;
-import com.weavelab.interview.ratelimit.strategy.model.RateLimitDecision;
-import com.weavelab.interview.ratelimit.strategy.model.RateLimitDecisionEvent;
+import com.weavelab.interview.ratelimit.service.IImmediateRateLimiter;
+import com.weavelab.interview.ratelimit.service.model.RateLimitDecision;
+import com.weavelab.interview.ratelimit.service.model.RateLimitDecisionEvent;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;

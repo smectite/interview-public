@@ -4,10 +4,10 @@ import static com.weavelab.interview.ratelimit.RateLimitResponseWriter.unavailab
 import static com.weavelab.interview.ratelimit.RateLimitResponseWriter.writeDecision;
 
 import com.weavelab.interview.config.RateLimitProperties;
-import com.weavelab.interview.ratelimit.strategy.QueuedRateLimiter;
-import com.weavelab.interview.ratelimit.strategy.Submission;
-import com.weavelab.interview.ratelimit.strategy.model.RateLimitDecision;
-import com.weavelab.interview.ratelimit.strategy.model.RateLimitDecisionEvent;
+import com.weavelab.interview.ratelimit.service.IQueuedRateLimiter;
+import com.weavelab.interview.ratelimit.service.ISubmission;
+import com.weavelab.interview.ratelimit.service.model.RateLimitDecision;
+import com.weavelab.interview.ratelimit.service.model.RateLimitDecisionEvent;
 
 import jakarta.servlet.AsyncContext;
 import jakarta.servlet.AsyncEvent;
@@ -30,12 +30,12 @@ import java.util.function.Consumer;
 public final class QueuedRateLimitFilter extends RateLimitFilter {
     private static final Logger LOG = LoggerFactory.getLogger(QueuedRateLimitFilter.class);
 
-    private final QueuedRateLimiter limiter;
+    private final IQueuedRateLimiter limiter;
     private final Duration timeout;
 
     /** Creates the configured adapter or value using the supplied dependencies. */
     public QueuedRateLimitFilter(
-            QueuedRateLimiter limiter, RateLimitProperties properties, Clock clock) {
+            IQueuedRateLimiter limiter, RateLimitProperties properties, Clock clock) {
         super(properties, clock);
         LOG.info("event=method_invocation method=QueuedRateLimitFilter.<init>");
         this.limiter = limiter;
@@ -69,7 +69,7 @@ public final class QueuedRateLimitFilter extends RateLimitFilter {
     }
 
     private void handlePending(
-            Submission submission, HttpServletRequest request, HttpServletResponse response)
+            ISubmission submission, HttpServletRequest request, HttpServletResponse response)
             throws IOException {
         if (!request.isAsyncSupported()) {
             submission.cancel();

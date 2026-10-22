@@ -1,6 +1,6 @@
 package com.weavelab.interview.ratelimit;
 
-import com.weavelab.interview.ratelimit.strategy.model.RateLimitDecision;
+import com.weavelab.interview.ratelimit.service.model.RateLimitDecision;
 
 import jakarta.servlet.http.HttpServletResponse;
 

@@ -1,4 +1,4 @@
-package com.weavelab.interview.ratelimit.strategy;
+package com.weavelab.interview.ratelimit.service;
 
 /** Shared lifecycle; admission contracts separately express synchronous or queued behavior. */
 public interface IRateLimiter extends AutoCloseable {

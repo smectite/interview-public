@@ -1,6 +1,6 @@
-package com.weavelab.interview.ratelimit.strategy;
+package com.weavelab.interview.ratelimit.service;
 
-import com.weavelab.interview.ratelimit.strategy.model.RateLimitDecision;
+import com.weavelab.interview.ratelimit.service.model.RateLimitDecision;
 
 import org.slf4j.LoggerFactory;
 
