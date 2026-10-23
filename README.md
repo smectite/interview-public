@@ -1,13 +1,13 @@
 # CRM API Server
 
-A simple CRM-style API server for managing contacts and files. Available in both Go and Java implementations with identical API interfaces.
+A CRM API server for contact management, file storage, and activity reporting, with Go and Java implementations. The Java application includes configurable process-local request admission. See the [Java architecture and operations guide](java/README.md) for its request flow, rate-limiting strategies, configuration, and operating boundaries.
 
 ## Implementations
 
 - **Go**: Located in `go/` directory
 - **Java**: Located in `java/` directory (Spring Boot)
 
-Both implementations share the same SQLite database schema and provide identical REST API endpoints.
+Both implementations use SQLite and expose the contact, file, and reporting endpoints described below. Runtime policies and configuration are implementation-specific.
 
 ## Quick Start
 
@@ -31,7 +31,7 @@ go run ./cmd/server
 
 ```bash
 cd java
-make seed   # Seed the database with test data
+APP_STARTUP_CHECK=false make seed   # Seed an empty database with test data
 make run    # Start the server
 ```
 
@@ -39,7 +39,7 @@ Or without make:
 
 ```bash
 cd java
-./mvnw spring-boot:run -Dspring-boot.run.arguments="--app.seed=true"
+./mvnw spring-boot:run -Dspring-boot.run.arguments="--app.startup-check=false --app.seed=true"
 ./mvnw spring-boot:run
 ```
 
@@ -80,7 +80,7 @@ The token should be a valid email address. It serves as the user identifier.
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/api/files` | List files |
-| `POST` | `/api/files` | Upload a file (multipart form, max 100MB) |
+| `POST` | `/api/files` | Upload a file (multipart form; implementation-specific size limits) |
 | `GET` | `/api/files/:id` | Download a file |
 
 ### Reports
@@ -151,15 +151,15 @@ go run ./cmd/server --seed --files=100         # Custom file count
 
 ```bash
 cd java
-make seed                                                                              # Default: 10k contacts, 20 files
-./mvnw spring-boot:run -Dspring-boot.run.arguments="--app.seed=true --contacts=50000"  # Custom contact count
+APP_STARTUP_CHECK=false make seed  # Default: 10k contacts, 20 files
+./mvnw spring-boot:run -Dspring-boot.run.arguments="--app.startup-check=false --app.seed=true --contacts=50000"  # Custom contact count
 ```
 
-To reset the database:
+Reset deletes the local data directory, including uploaded files:
 
 ```bash
 cd go && make reset   # Go
-cd java && make reset # Java
+cd java && APP_STARTUP_CHECK=false make reset # Java
 ```
 
 ## Benchmarks (Go only)
@@ -189,4 +189,7 @@ Configuration is in `src/main/resources/application.properties`:
 |----------|---------|-------------|
 | `server.port` | `8080` | Server listen port |
 | `app.data-dir` | `data` | Data directory for database and files |
-| `app.max-upload-size` | `104857600` | Max file upload size (100MB) |
+| `spring.datasource.url` | `jdbc:sqlite:data/app.db` | SQLite database location; configure separately from `app.data-dir` |
+| `app.max-upload-size` | `104857600` | Bound application setting; not enforced by the upload path |
+
+Java multipart limits are controlled separately through Spring servlet multipart settings. All Java routes, including health checks and unauthorized requests, share the configured rate allowance. See [Java configuration](java/README.md#configuration) and [the HTTP contract](java/README.md#http-contract) for details.

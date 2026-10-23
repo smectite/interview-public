@@ -48,6 +48,18 @@ import java.util.function.LongSupplier;
  * with per-entry ordered delivery preserving ENQUEUED before its terminal event. The externally
  * owned scheduler wakes only while requests wait, at the next token or earliest expiration. Servlet
  * suspension and dispatch belong to the HTTP adapter.
+ *
+ * <p>For example, capacity 2 permits two immediate admissions and two additional waiting
+ * requests. With a one-second interval, one waiting request is released per second after the
+ * initial burst, provided its timeout has not elapsed. This controls admission rate, not the
+ * number of admitted requests still executing. Limits apply only to this instance; separate
+ * instances or application processes do not share tokens.
+ *
+ * <p>Each attempt has exactly one terminal outcome: ALLOWED, RATE_LIMITED (queue full),
+ * TIMED_OUT, CANCELED or STOPPED. Closing the limiter or a scheduler rejection permanently stops
+ * admission. No worker thread sleeps while waiting for a token, although observer callbacks and
+ * synchronous completion-stage continuations may run on the submitting, scheduler or closing
+ * thread and should return promptly.
  */
 public final class BoundedQueueRateLimiter implements IQueuedRateLimiter {
     private static final Logger LOG = LoggerFactory.getLogger(BoundedQueueRateLimiter.class);
@@ -67,6 +79,12 @@ public final class BoundedQueueRateLimiter implements IQueuedRateLimiter {
     /**
      * Creates a full token bucket and empty queue; no task runs until a request waits.
      *
+     * <p>Durations are converted to nanoseconds. Initialization samples the ticker once to
+     * establish the refill baseline; subsequent elapsed-time calculations use that same clock.
+     *
+     * @throws IllegalArgumentException if capacity, interval or timeout is not positive
+     * @throws ArithmeticException if a duration or capacity times interval overflows nanoseconds
+     * @throws NullPointerException if a duration, ticker or scheduler is null
      * @param capacity positive token-bucket size and maximum number of waiting requests
      * @param interval positive time required to earn one token
      * @param timeout positive maximum time a request may remain queued
@@ -99,6 +117,17 @@ public final class BoundedQueueRateLimiter implements IQueuedRateLimiter {
      * <p>Waiting entries emit ENQUEUED followed by one terminal event. Immediate decisions emit
      * only their terminal event. Retry-after for a full queue is advisory and reflects the next
      * token deadline, not a reservation for the rejected caller.
+     *
+     * <p>Under the limiter lock, first refill tokens, expire overdue entries and release older
+     * waiting requests. Only then consider this attempt: take a token if the queue is empty,
+     * reject if the waiting queue is full, or append to its tail. Refresh the scheduled wake-up
+     * after this transition. A closed limiter immediately returns STOPPED. Notifications collected
+     * during the transition are delivered after releasing the lock; concurrent delivery can mean
+     * the returned handle is still awaiting notification even after its outcome has been chosen.
+     *
+     * @param observer receives immutable diagnostic events; runtime exceptions are logged and
+     *     isolated from the admission decision
+     * @return handle for observing the terminal decision or terminating pending admission
      */
     public ISubmission submit(Consumer<RateLimitDecisionEvent> observer) {
         LOG.info("event=method_invocation method=BoundedQueueRateLimiter.submit");
@@ -135,6 +164,17 @@ public final class BoundedQueueRateLimiter implements IQueuedRateLimiter {
     /**
      * Replaces the wake-up with the earliest token availability or expiration. Caller holds the
      * lock.
+     *
+     * <p>Cancel the previous task without interrupting a callback already running. Schedule no
+     * replacement when the queue is empty or the limiter is closed. Otherwise choose the minimum
+     * of the next-token delay and every waiting entry's remaining timeout, clamped to zero.
+     * An early or late callback rechecks actual clock time in {@link #tick()}.
+     *
+     * <p>If the executor rejects the task, permanently stop the limiter and collect STOPPED
+     * completions for all pending entries; the caller delivers those completions outside the lock.
+     *
+     * @param now current monotonic time in nanoseconds
+     * @param notifications destination for deferred logging and terminal delivery
      */
     private void reschedule(long now, List<Runnable> notifications) {
         if (task != null) {
@@ -159,7 +199,18 @@ public final class BoundedQueueRateLimiter implements IQueuedRateLimiter {
         }
     }
 
-    /** Expires requests before spending tokens, preserving FIFO even on late callbacks. */
+    /**
+     * Refills the bucket, removes every expired entry, then admits surviving entries in FIFO order.
+     * The caller must hold the limiter lock and deliver collected notifications after unlocking.
+     *
+     * <p>An entry expires when its age is greater than or equal to the timeout. Expiration is
+     * checked before any token is spent, so timeout wins at an exact deadline. Expired entries
+     * consume no token. The release loop can spend several accumulated tokens after a delayed
+     * callback, taking one token per admitted entry.
+     *
+     * @param now current monotonic time in nanoseconds
+     * @param notifications destination for deferred observer calls and future completions
+     */
     private void processWaiting(long now, List<Runnable> notifications) {
         refill(now);
         for (Iterator<Entry> it = queue.iterator(); it.hasNext(); ) {
@@ -178,7 +229,17 @@ public final class BoundedQueueRateLimiter implements IQueuedRateLimiter {
         }
     }
 
-    /** Retains partial refill time; discards credit beyond a full bucket. Caller holds the lock. */
+    /**
+     * Credits whole elapsed intervals to the bucket without exceeding capacity; caller holds the lock.
+     *
+     * <p>If already full, move the baseline to now so idle time cannot fund an extra burst. Otherwise
+     * divide nonnegative elapsed time by the interval. With no whole interval, leave state unchanged.
+     * If the earned tokens fill the bucket, reset the baseline to now and discard excess time.
+     * For a partial refill, advance the baseline by only the credited whole intervals, preserving
+     * the fractional remainder for the next call. Backward clock movement earns no tokens.
+     *
+     * @param now current monotonic time in nanoseconds
+     */
     private void refill(long now) {
         if (tokens == capacity) {
             lastRefill = now;
@@ -196,10 +257,25 @@ public final class BoundedQueueRateLimiter implements IQueuedRateLimiter {
         }
     }
 
+    /**
+     * Calculates the delay until a token can be used, without modifying refill state.
+     * The caller must hold the limiter lock and normally refill before making scheduling decisions.
+     *
+     * @param now current monotonic time in nanoseconds
+     * @return zero if tokens exist or an interval has elapsed; otherwise the remaining nanoseconds
+     *     in the interval, treating backward clock movement as zero elapsed time
+     */
     private long nextTokenDelay(long now) {
         return tokens > 0 ? 0 : Math.max(0, interval - Math.max(0, now - lastRefill));
     }
 
+    /**
+     * Handles one scheduler wake-up using actual elapsed time rather than assuming it ran on time.
+     *
+     * <p>Under the limiter lock, return if closed; otherwise process expiration and admission,
+     * then schedule the next useful wake-up. Deliver collected events and completions outside the
+     * lock. This makes early callbacks harmless and lets late callbacks use accumulated tokens.
+     */
     private void tick() {
         List<Runnable> notifications = new ArrayList<>();
         synchronized (this) {
@@ -212,7 +288,21 @@ public final class BoundedQueueRateLimiter implements IQueuedRateLimiter {
         notifications.forEach(Runnable::run);
     }
 
-    /** Captures state under the lock; later logging never reads a changing queue. */
+    /**
+     * Builds an immutable diagnostic snapshot while the caller holds the limiter lock.
+     *
+     * <p>The supplied queue size records the state before the transition; the current size and
+     * token count record the state after it. Request age and deadline remainder are clamped to
+     * zero. Taking this snapshot now lets later observer delivery avoid reading mutable state.
+     *
+     * @param e attempt whose elapsed wait and deadline are reported
+     * @param decision event name, including ENQUEUED or a terminal outcome
+     * @param reason machine-readable reason for the transition
+     * @param now current monotonic time in nanoseconds
+     * @param before queue size immediately before the transition
+     * @param retry advisory retry delay in nanoseconds, normally zero except for queue rejection
+     * @return event with timing, queue bounds, token bounds and next-token delay
+     */
     private RateLimitDecisionEvent event(
             Entry e, String decision, String reason, long now, int before, long retry) {
         return new RateLimitDecisionEvent(
@@ -240,6 +330,20 @@ public final class BoundedQueueRateLimiter implements IQueuedRateLimiter {
     /**
      * Marks a terminal transition under the lock and defers its notification/completion. Callers
      * must ensure the entry has not already reached a terminal state.
+     *
+     * <p>Set the terminal flag immediately so release, cancellation and timeout cannot choose
+     * another outcome. Capture diagnostics and the result, then append one delivery action to the
+     * entry mailbox. That action emits the terminal event before completing the future. Earlier
+     * ENQUEUED delivery stays ahead of it even if another thread drains the mailbox first.
+     * This method neither removes the entry from the waiting queue nor spends a token; callers
+     * perform those state changes first. Only RATE_LIMITED receives an advisory retry delay.
+     *
+     * @param e nonterminal attempt to settle
+     * @param outcome final admission outcome
+     * @param reason machine-readable reason for the outcome
+     * @param now current monotonic time in nanoseconds
+     * @param before queue size before the caller's transition
+     * @param notifications destination for the deferred mailbox drain
      */
     private void finish(
             Entry e,
@@ -260,7 +364,17 @@ public final class BoundedQueueRateLimiter implements IQueuedRateLimiter {
         notifications.add(e::deliver);
     }
 
-    /** Stops future admission and collects terminal notifications for all waiting entries. */
+    /**
+     * Permanently closes admission and drains pending entries as STOPPED under the limiter lock.
+     *
+     * <p>Cancel the scheduled wake-up without interrupting a running callback, clear its handle,
+     * and remove waiting entries in FIFO order. Each removal records its own queue-size transition.
+     * Repeated calls are harmless because the queue is already empty. The externally owned executor
+     * and previously admitted work remain active.
+     *
+     * @param now current monotonic time used for all shutdown snapshots
+     * @param notifications destination for terminal deliveries to run after unlocking
+     */
     private void stop(long now, List<Runnable> notifications) {
         closed = true;
         if (task != null) {
@@ -276,6 +390,10 @@ public final class BoundedQueueRateLimiter implements IQueuedRateLimiter {
     /**
      * Permanently stops admission, cancels the scheduled task and settles pending entries as
      * STOPPED. Already released work is unaffected. Does not shut down the shared executor.
+     *
+     * <p>Shutdown competes with admission and cancellation under the same lock. Once stopped,
+     * future submissions receive STOPPED. Repeated calls are harmless. Deliver pending terminal
+     * events and complete their futures after releasing the lock.
      */
     public void close() {
         LOG.info("event=method_invocation method=BoundedQueueRateLimiter.close");
@@ -286,7 +404,14 @@ public final class BoundedQueueRateLimiter implements IQueuedRateLimiter {
         notifications.forEach(Runnable::run);
     }
 
-    /** One request's enqueue time, completion handle and ordered notification mailbox. */
+    /**
+     * State and completion handle for one admission attempt, including immediate decisions.
+     *
+     * <p>The timestamp is captured at submission and becomes the deadline baseline if queued.
+     * Queue membership and terminal state use the enclosing limiter lock. The concurrent mailbox
+     * and atomic drain guard serialize this entry's notifications outside that lock; different
+     * entries may deliver concurrently.
+     */
     private final class Entry implements ISubmission {
         final long enqueued;
         final Consumer<RateLimitDecisionEvent> observer;
@@ -297,7 +422,16 @@ public final class BoundedQueueRateLimiter implements IQueuedRateLimiter {
         // Guarded by the enclosing limiter lock, unlike the atomic delivery guard.
         boolean terminal;
 
-        // Multiple threads may publish state transitions, but observers see them in order.
+        /**
+         * Drains this entry's notification mailbox in publication order outside the limiter lock.
+         *
+         * <p>An atomic compare-and-set gives one thread ownership; competing drainers return.
+         * Always release ownership in a finally block. Recheck after releasing it to cover a
+         * publisher that appended work while a competing drainer still saw ownership held.
+         * Another thread may acquire ownership first, in which case this drainer exits safely.
+         * This preserves ENQUEUED before the terminal event and terminal observer delivery before
+         * future completion, including when callbacks reenter the limiter.
+         */
         void deliver() {
             do {
                 if (!delivering.compareAndSet(false, true))
@@ -312,30 +446,68 @@ public final class BoundedQueueRateLimiter implements IQueuedRateLimiter {
             } while (!deliveries.isEmpty());
         }
 
+        /**
+         * Creates a pending attempt with an empty mailbox and incomplete decision future.
+         *
+         * @param enqueued submission time in monotonic nanoseconds, also the queue deadline baseline
+         * @param observer diagnostic event consumer, invoked only through deferred delivery
+         */
         Entry(long enqueued, Consumer<RateLimitDecisionEvent> observer) {
             this.enqueued = enqueued;
             this.observer = observer;
         }
 
-        /** Exposes observation/composition without exposing the internally writable future. */
+        /**
+         * Exposes the terminal result as a completion stage suitable for asynchronous composition.
+         *
+         * <p>The minimal stage does not expose the internally writable future. Completing or
+         * canceling a future obtained from that stage does not change this attempt. Use
+         * {@link #cancel()} or {@link #timeout()} to terminate pending admission. Terminal observer
+         * delivery occurs before the internal future completes; callers should not block waiting
+         * for this stage, especially from the observer itself.
+         *
+         * @return observation stage for the single final decision
+         */
         public CompletionStage<RateLimitDecision> decision() {
             LOG.info("event=method_invocation method=BoundedQueueRateLimiter.Entry.decision");
             return future.minimalCompletionStage();
         }
 
-        /** Cancels this attempt if it is still pending; already granted admission is unchanged. */
+        /**
+         * Removes pending admission and reports CANCELED with reason CLIENT_CANCELLED.
+         *
+         * <p>This is a normal decision completion, not exceptional cancellation of the future.
+         * Removal frees a waiting slot and refreshes scheduling without consuming or refunding a
+         * token. If any terminal transition already won, including admission, this call does nothing.
+         */
         public void cancel() {
             LOG.info("event=method_invocation method=BoundedQueueRateLimiter.Entry.cancel");
             terminatePending(CANCELED, "CLIENT_CANCELLED");
         }
 
-        /** Settles this attempt as timed out if it is still pending. */
+        /**
+         * Removes pending admission and reports TIMED_OUT with reason QUEUE_TIMEOUT.
+         *
+         * <p>This explicit signal may come from an adapter timeout; it does not check whether the
+         * limiter's enqueue-relative deadline has elapsed. Removal frees a waiting slot without
+         * spending a token. An already terminal attempt is unchanged.
+         */
         public void timeout() {
             LOG.info("event=method_invocation method=BoundedQueueRateLimiter.Entry.timeout");
             terminatePending(TIMED_OUT, "QUEUE_TIMEOUT");
         }
 
-        /** Cancel/timeout competes with release under the same lock; only the first wins. */
+        /**
+         * Applies cancellation or an explicit timeout atomically against admission and shutdown.
+         *
+         * <p>Under the enclosing limiter lock, return if already terminal; otherwise remove this
+         * entry, capture current time, record its terminal transition and refresh the wake-up.
+         * This method does not refill or release other entries directly; a zero-delay wake-up can
+         * process available tokens. Drain notifications after unlocking so observers can reenter.
+         *
+         * @param outcome CANCELED or TIMED_OUT, completed as a normal decision
+         * @param reason machine-readable cause of the explicit termination
+         */
         private void terminatePending(RateLimitDecision.Outcome outcome, String reason) {
             List<Runnable> notifications = new ArrayList<>();
             synchronized (BoundedQueueRateLimiter.this) {

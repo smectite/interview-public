@@ -1,154 +1,221 @@
-# CRM API: process-local request rate limiting
+# Java CRM API
 
-Java 17 and Spring Boot 3.3. Run `./mvnw test` (or `make test`). No additional dependencies are required.
+A Java 17 and Spring Boot 3.3 application for contact management, file storage, and activity reporting. Spring MVC handles HTTP requests, `JdbcTemplate` accesses SQLite, and uploaded content resides on the local filesystem. A configurable, process-local rate limiter controls admission before authentication and controller execution.
 
-## Configuration
+## Run locally
 
-Defaults in `src/main/resources/application.properties`:
+Use JDK 17 or later and the included Maven wrapper. Run these commands from `java/`:
 
-```properties
-app.rate-limit.approach=LAZY_DRAINING
-app.rate-limit.capacity=10
-app.rate-limit.requests=10
-app.rate-limit.period=60s
-app.rate-limit.queue-timeout=6s
+```sh
+# Initialize an empty database with 10,000 contacts and 20 files.
+APP_STARTUP_CHECK=false make seed
+
+# Start the HTTP server on port 8080.
+make run
+
+# Run unit and integration tests.
+./mvnw test
 ```
 
-Select `LAZY_DRAINING`, `SLIDING_WINDOW`, or `BOUNDED_QUEUE`. `SCHEDULED_LEAKAGE` has been removed and its configuration value fails startup. The `RateLimitConfig.rateLimiter` factory selects one process-local singleton at startup. `FilterConfig` selects and registers exactly one matching rate-limit filter, before authentication. Restart to change configuration; restart resets rate state. Multiple application processes do not share state.
+The startup check requires a populated database by default. Disable it during initial seeding so it does not exit before the seed command runs. Seeding exits when complete and skips an already populated database. Custom seed counts are supplied as application arguments:
 
-All clients, HTTP methods and routes share the limiter, including `/health`, `/api/auth/token`, unauthenticated attempts and uploads. An unauthorized attempt consumes an admission; an exhausted quota returns 429 before authentication. Downstream failures do not refund admissions. This policy does not limit already executing requests.
+```sh
+./mvnw spring-boot:run \
+  -Dspring-boot.run.arguments="--app.startup-check=false --app.seed=true --contacts=50000 --files=100"
+```
 
-| Strategy | Admission behavior | HTTP workflow |
-| --- | --- | --- |
-| `LAZY_DRAINING` (default) | Capacity ten allows an initial burst of ten, then recovers one admission every six seconds | Synchronous admission or rejection |
-| `SLIDING_WINDOW` | At most ten accepted requests in any rolling minute | Synchronous admission or rejection |
-| `BOUNDED_QUEUE` | Ten initial tokens; consume immediately or wait FIFO for a token, replenished every six seconds | Immediate result or servlet async continuation |
+`make build` packages the application with tests skipped. `make reset` and `make clean` delete the local `data/` directory, including the database and uploaded files.
 
-**Capacity ten lazy draining does not guarantee ten requests per rolling minute.** Select `SLIDING_WINDOW` for that guarantee. For example, lazy draining can admit ten requests at time zero and another at six seconds, whereas sliding window rejects the eleventh until the oldest admission is sixty seconds old.
+## Architecture and request flow
 
-`capacity` must be 1 or 10 and defaults to 10. It controls lazy-bucket burst capacity. In queue mode it independently bounds stored tokens and waiting entries: capacity ten means up to ten tokens plus up to ten waiting requests. Sliding window uses `requests` and `period` as its quota; `capacity` does not change that quota. The nominal release interval is `period / requests`, six seconds by default. Durations and request counts must be positive; the period must divide exactly into integer-nanosecond intervals. Invalid settings fail startup.
+The application has four principal boundaries:
 
-## Algorithms and timing
+| Boundary | Responsibility |
+| --- | --- |
+| HTTP adapters | Route requests, enforce admission, extract identity, and translate decisions into HTTP responses |
+| Admission services | Make thread-safe rate decisions using monotonic time, independently of servlet APIs |
+| Controllers and repositories | Execute CRM operations, persist records, and record activity |
+| Configuration and lifecycle | Validate settings, select one limiter and matching adapter, and manage scheduler shutdown |
 
-### Lazy draining
+An original request follows this path:
 
-Subtract elapsed monotonic time from drain-time debt on each request, clamp at zero and admit only if another request fits. No background tasks run. Capacity one remains available when strict six-second spacing is preferred over bursts.
+```text
+HTTP request
+  -> selected RateLimitFilter
+  -> AuthFilter: extract email identity
+  -> AuthInterceptor: require identity for /api/*
+  -> controller
+  -> repository -> SQLite / local file storage
+```
 
-### Sliding window
+`RateLimitConfig` constructs one shared limiter at startup. `FilterConfig` selects exactly one compatible HTTP adapter and registers it before authentication. Strategy selection is a startup decision, so requests do not repeatedly choose an algorithm.
 
-Keep a deque of accepted request timestamps. Under one short lock, remove timestamps whose age is at least the configured period, reject if the deque still contains `requests` entries, or append the current timestamp. Rejections do not extend the window. `Retry-After` describes when the oldest retained admission expires.
+All routes, HTTP methods, and callers share the same allowance. This includes `/health`, `/api/auth/token`, uploads, and unauthorized requests. Admission can therefore return 429 before authentication would return 401. An admitted request consumes its allowance even if authentication or a downstream operation fails.
 
-The rolling interval is `(now - period, now]`: an admission exactly sixty seconds old no longer counts. The deque retains at most the configured number of accepted requests. Timestamp expiration is lazy; no scheduler runs. All calculations use an injected monotonic ticker rather than wall-clock time.
+The limiter controls how quickly requests start. Already executing requests are outside its accounting. Each application instance owns independent state; restarting the application resets that state.
 
-### Bounded queue
+### Admission contracts
 
-The bucket starts full with ten tokens. Each admission consumes one token. When tokens are exhausted, requests wait FIFO for replenishment or timeout; a full waiting queue rejects immediately. New arrivals cannot bypass older waiting requests, even if the scheduler is late.
-
-Replenishment earns one whole token per six-second interval, up to capacity. Elapsed time is calculated lazily on submission or scheduler wake-up; unused partial intervals are retained while below capacity. Credit beyond a full bucket is discarded. Ten requests can run immediately, followed by queued releases as tokens return. Idle time restores up to ten tokens. A delayed callback may release several waiting requests using earned tokens; this strategy no longer promises six-second spacing between every release.
-
-The default waiting timeout is **six seconds**, measured from enqueue. Expiration wins when a request's deadline coincides with token availability. For example, after all ten tokens are consumed at time zero, an eleventh request at time zero expires at six seconds. A request arriving at time one can take the token at time six after waiting five seconds. Expired or canceled requests do not consume tokens; already allowed requests do not refund tokens on cancellation. Queue capacity does not guarantee that every waiting request survives the timeout.
-
-This token bucket allows bursts and does not guarantee a strict ten-request rolling-minute quota; select `SLIDING_WINDOW` for that requirement.
-
-Pending requests use Servlet async processing instead of occupying request threads. Release resumes through container dispatch; authentication and controllers never run on the scheduler thread. Timeout, cancellation, disconnect, shutdown and scheduler rejection settle pending entries once. The scheduler considers the next token and earliest expiration, and runs only while requests wait. Client/proxy timeouts must accommodate the configured waiting period; disconnect detection depends on the container.
-
-## HTTP adaptation and organization
-
-- `RateLimitFilter`: abstract template for initial admission, redispatch guards, request metadata and shared immediate-response handling.
-- `ImmediateRateLimitFilter`: selected for lazy draining and sliding window. Depends on `ImmediateRateLimiter.tryAcquire`, which returns a decision directly. It has no futures, submissions, cancellation or servlet async setup.
-- `QueuedRateLimitFilter`: selected only for bounded queue. Handles immediate results and owns pending requests' async setup, timeout, cancellation, completion and dispatch races.
-- `RateLimitResponseWriter`: shared response status, headers and JSON policy.
-- `ratelimit.strategy`: limiter/submission contracts and immutable decisions/events.
-- `ratelimit.strategy.impl`: the three implementations and package-private `LimiterSupport`.
-- `RateLimitConfig`: algorithm factory and managed scheduler. Only queue mode schedules work.
-- `FilterConfig`: startup filter factory, rate-limit registration and auth registration.
-- `RateLimitProperties`: defaults and validation.
-
-The admission contracts match the execution models:
+The contracts live in `com.weavelab.interview.ratelimit.service`:
 
 ```java
-interface ImmediateRateLimiter extends RateLimiter {
+interface IRateLimiter extends AutoCloseable {
+    void close();
+}
+
+interface IImmediateRateLimiter extends IRateLimiter {
     RateLimitDecision tryAcquire(Consumer<RateLimitDecisionEvent> observer);
 }
 
-interface QueuedRateLimiter extends RateLimiter {
-    Submission submit(Consumer<RateLimitDecisionEvent> observer);
+interface IQueuedRateLimiter extends IRateLimiter {
+    ISubmission submit(Consumer<RateLimitDecisionEvent> observer);
 }
 ```
 
-`RateLimiter` shares only the close lifecycle. Lazy draining and sliding window implement `ImmediateRateLimiter`; bounded queue implements `QueuedRateLimiter`. Only the queue contract exposes a future and cancellation. `FilterConfig` selects the matching HTTP adapter from the selected limiter's admission contract at startup. Concrete filter constructors require the corresponding interface, preventing accidental cross-wiring.
+`IImmediateRateLimiter` returns a decision directly. `IQueuedRateLimiter` returns an `ISubmission` exposing a `CompletionStage<RateLimitDecision>`, cancellation, and explicit timeout. `RateLimitDecision` and `RateLimitDecisionEvent` reside in `ratelimit.service.model`; implementations reside in `ratelimit.service.impl`.
 
-Exactly one rate-limit filter is registered. The filter does not select an algorithm per request. Original requests are charged once; granted async continuations and error dispatches do not acquire again.
+`ImmediateRateLimitFilter` depends on the immediate contract. `QueuedRateLimitFilter` owns servlet suspension, timeout listeners, completion, and redispatch. `RateLimitFilter` provides shared request metadata, dispatch guards, and decision handling; `RateLimitResponseWriter` provides the common HTTP error policy. These boundaries keep servlet lifecycle concerns out of the admission algorithms.
 
-## HTTP responses
+## Configuration
 
-- 429 with `{"error":"Too many requests"}` for a full bucket, rolling window or waiting queue.
-- `Retry-After`: positive seconds rounded upward; another client may consume the next admission first.
-- 503 for queue timeout, stopped limiter, unavailable async handling or exceptional queued completion.
-- Limiter-generated error responses use `Cache-Control: no-store`.
+Defaults are defined in `src/main/resources/application.properties`. Spring Boot application arguments and environment variables can override them.
 
-With default settings, the first ten immediate `/health` requests are eligible and the eleventh is rejected. After six seconds, lazy draining recovers one admission. With sliding window selected, the eleventh must instead wait until the oldest of those ten admissions expires. Health probes share the quota.
+| Property | Default | Meaning |
+| --- | --- | --- |
+| `server.port` | `8080` | HTTP listen port |
+| `spring.datasource.url` | `jdbc:sqlite:data/app.db` | SQLite database location |
+| `app.data-dir` | `data` | Directory created at initialization; uploaded files use its `files/` subdirectory |
+| `app.startup-check` | `true` when unspecified | Require a populated database at startup |
+| `app.rate-limit.approach` | `LAZY_DRAINING` | Startup-selected algorithm |
+| `app.rate-limit.capacity` | `10` | Lazy-draining burst bound; token and waiting bounds in queue mode |
+| `app.rate-limit.requests` | `10` | Admissions per configured period, interpreted by the selected algorithm |
+| `app.rate-limit.period` | `60s` | Rate period; exact rolling-window duration for sliding window |
+| `app.rate-limit.queue-timeout` | `6s` | Maximum enqueue-relative wait in queue mode |
 
-## INFO decision logging
+The refill or drainage interval is `period / requests`, six seconds by default. Application configuration accepts capacity **1 or 10**. Request count and durations must be positive, the period must divide into whole nanosecond intervals, and time calculations must fit supported numeric bounds. Invalid configuration fails startup. Sliding window uses `requests` and `period` for its quota; capacity does not change that quota.
 
-Every decision logs a generated request ID, original request time, decision time, HTTP method, configured strategy/capacity/rate, outcome/reason, retry and waiting durations, and an immutable state snapshot. Snapshots are captured atomically with admission; logging and completion callbacks occur outside the state lock. UTC timestamps are diagnostic; rate arithmetic uses monotonic time.
-
-Lazy snapshots describe debt before/after draining and the resulting debt. Sliding-window snapshots describe retained counts, quota and window duration. Queue snapshots describe waiting size, available tokens, token capacity, next-token delay and timeout remaining. Keys state units, such as `Ns`; shared retry/wait fields use milliseconds.
-
-Immediate releases produce one `ALLOWED` event. Waiting queue requests produce `ENQUEUED` followed by a terminal event such as `ALLOWED`, `TIMED_OUT`, `CANCELED` or `STOPPED`. Full queues produce `RATE_LIMITED`. Events share the original request ID; redispatch does not create another admission or log.
-
-Bodies, query strings, tokens, client identities and sensitive headers are excluded. Every decision remains INFO-level; configure log retention for overload traffic.
-
-## Invocation and failure diagnostics
-
-Explicitly declared public methods and constructors in the rate-limit feature and its configuration log INFO entries with `event=method_invocation` and a stable method name. This includes property accessors, interface convenience overloads, submission handles and async listener callbacks. Calls through a convenience overload also invoke and log its implementation. Method arguments, request bodies and headers are not included. Compiler-generated record accessors, `equals`/`hashCode`/`toString`, implicit constructors and inherited framework methods are not instrumented.
-
-Invocation entries are distinct from `event=rate_limit_decision` transitions; filter log consumers by event type when counting admissions. Constructor invocation logging is synchronous and may occur while an immutable snapshot is created inside a state lock. Decision observers, scheduler failure diagnostics and future completion remain outside limiter locks.
-
-Observer failures log WARN with the exception while preserving admission. Scheduler rejection and exceptional queued decisions log ERROR with their exception. Async setup or response/dispatch failures and servlet errors log WARN; timeout is also WARN. An async context already closed during completion is an expected race, logged at DEBUG with the exception. Caught exceptions are not silently discarded. These logs add volume, so size operational retention for the requested INFO invocation policy.
-
-## Testing and tradeoffs
-
-Deterministic tests use manual time and scheduling rather than sleeps. Coverage includes lazy capacities, exact rolling-window expiration, individually staggered admissions, concurrent global admission, immutable snapshots, FIFO, initial token bursts, capped idle refill, partial refill intervals, delayed callbacks, six-second deadlines, cancellation, observer failures, shutdown and scheduler rejection. Filter tests cover immediate rejection, async setup/release races, timeout, metadata, synchronous operation without servlet async support and exceptional queued completion. Factory tests verify defaults, strategy/filter selection and invalid settings. Embedded Tomcat tests exercise global quota, authentication, error responses and actual queued dispatch.
-
-Tests disable the unrelated empty-database startup check. Algorithms hold locks only for short state changes, never while logging, completing futures or invoking HTTP handlers. Spring closes the limiter before destroying its scheduler.
-
-Lazy draining is smallest and permits bursts. Sliding window adds a small timestamp deque to provide the exact rolling guarantee. Token-backed queueing permits bounded bursts and retains servlet resources and introduces timeout/cancellation races; six seconds permits little backlog. A global quota allows one noisy client to consume the allowance. Possible future work includes metrics, overload/cancellation stress tests, explicit health-probe policy and separate concurrency protection. Distributed coordination and per-client fairness remain outside scope.
-
-## Existing seed command limitation
-
-The unrelated empty-database startup check can terminate `make seed` before seeding. A temporary workaround is:
+For example, start with bounded queue admission:
 
 ```sh
-APP_STARTUP_CHECK=false make seed
+./mvnw spring-boot:run \
+  -Dspring-boot.run.arguments="--app.rate-limit.approach=BOUNDED_QUEUE"
 ```
 
-`make reset` deletes the `data` directory; do not use it against data you want to retain.
+Changing `app.data-dir` does not change the JDBC URL; configure both when relocating storage. `app.max-upload-size=104857600` is bound by `AppConfig`, but the upload path does not enforce that value. Multipart acceptance also depends on Spring's `spring.servlet.multipart.max-file-size` and `spring.servlet.multipart.max-request-size` settings; this application does not explicitly configure those settings.
 
-## Test directory layout
+## Rate-limiting strategies
 
-Unit and integration categories sit directly under `src/test/java`, with production package folders mirrored beneath each category. Class names are unchanged, and Java package declarations match the complete directory path (for example, `unittest.com.weavelab.interview.config`).
+| Strategy | State | Admission policy | Default behavior |
+| --- | --- | --- | --- |
+| `LAZY_DRAINING` | Drain-time debt | Admit immediately when one more interval fits within capacity; otherwise reject | Burst of ten, then one recovered admission every six seconds |
+| `SLIDING_WINDOW` | Deque of accepted timestamps | Admit only when fewer than `requests` accepted timestamps remain in the rolling period | At most ten admissions in any rolling minute |
+| `BOUNDED_QUEUE` | Token bucket and bounded FIFO queue | Consume an available token, wait for one, or reject a full queue | Ten initial tokens, up to ten waiting entries, six-second refill and waiting timeout |
 
-```text
-src/test/java/
-  unittest/com/weavelab/interview/
-    config/RateLimitConfigTest.java
-    ratelimit/
-      RateLimitFilterTest.java
-      RateLimitLoggingTest.java
-      strategy/impl/
-        BoundedQueueTokenTest.java
-        ImmediateRateLimiterTest.java
-        RateLimitDiagnosticsTest.java
-        RateLimiterCoreTest.java
-        SlidingWindowRateLimiterTest.java
-        ManualScheduler.java
-  integrationtest/com/weavelab/interview/
-    ApplicationTests.java
-    ratelimit/
-      DefaultHttpTest.java
-      QueueHttpTest.java
-      SlidingWindowHttpTest.java
+### Lazy draining
+
+Each admission adds one interval of debt. On each attempt, elapsed monotonic time reduces debt, clamped at zero. Admission succeeds when adding another interval would stay within `capacity * interval`. Rejections add no debt. The algorithm needs constant state and performs no scheduled work.
+
+This policy supports bursts and a sustained recovery rate. With default settings it can accept ten requests at time zero and another at six seconds. It does not enforce ten requests per rolling minute. Capacity one provides interval spacing between admissions.
+
+### Sliding window
+
+Under one lock, discard accepted timestamps whose age is at least `period`, then either append the current timestamp or reject a full window. Rejections do not extend the window. The retained interval is `(now - period, now]`; an admission exactly one period old falls outside the window.
+
+Memory is bounded by `requests`. Expiration occurs on admission attempts without a scheduler. A rejection's retry duration is the time until the oldest retained admission leaves the window. This is the strategy for an exact rolling quota.
+
+### Bounded queue
+
+`BoundedQueueRateLimiter` starts with `capacity` tokens. Each admitted request consumes one token. If no older request is waiting, a new request can consume a token immediately. Otherwise it joins the FIFO queue, provided that queue has space. Capacity independently bounds stored tokens and waiting entries; neither bound counts requests already admitted and executing.
+
+Processing follows a fixed order: refill tokens, expire overdue entries, then release surviving entries from the queue head. A new submission processes existing waiters before considering its own admission. New arrivals therefore cannot bypass older waiting requests.
+
+Refill earns one token per whole interval, capped at capacity. Partial intervals are retained while the bucket remains below capacity. Once full, excess idle credit is discarded. A late scheduler callback may release multiple entries using accumulated tokens, so releases can occur in bursts.
+
+Each waiting entry has a deadline measured from submission. Expiration wins when that deadline coincides with token availability. With default settings and all tokens spent at time zero:
+
+- A request queued at time zero expires at six seconds, before spending the token earned then.
+- A request queued at time one can use that token at time six after waiting five seconds.
+
+Queue space therefore does not guarantee eventual admission. Cancellation and timeout remove pending entries without consuming tokens. An already granted admission cannot be undone or refunded.
+
+The scheduler wakes at the earlier of the next token or earliest waiting deadline. It schedules work only while entries wait. Scheduler rejection permanently closes admission and settles pending entries as STOPPED. Spring closes the limiter before shutting down the externally owned executor.
+
+### Concurrency and notification delivery
+
+Each limiter synchronizes state transitions and diagnostic snapshots under one monitor. Monotonic time drives rate calculations; UTC wall-clock time is used for diagnostic timestamps.
+
+Observer delivery and future completion occur after releasing the state lock. Each queued entry has an ordered notification mailbox and atomic drain guard, preserving ENQUEUED before its terminal event even when several threads compete to deliver notifications. Terminal state is chosen under the limiter lock, so release, timeout, cancellation, and shutdown settle each attempt once.
+
+Callbacks and synchronous completion-stage continuations run on the thread delivering the result. They should return promptly. Invocation logging during snapshot construction can occur inside the state lock; deferred decision delivery does not imply that all logging occurs outside it.
+
+### Servlet async lifecycle
+
+A pending admission starts Servlet async processing and returns the request thread to the container. The adapter installs timeout and error listeners before attaching the completion callback. An atomic completion guard arbitrates the response and dispatch races.
+
+An ALLOWED result marks the request as granted and calls `AsyncContext.dispatch()`. Authentication and controller execution resume on a container thread. The granted redispatch does not acquire another allowance. Error dispatches also do not charge admission again.
+
+Servlet timeout signals TIMED_OUT; error or disconnect signals cancellation of pending admission. Disconnect detection depends on the container. Async setup failures cancel pending work and return 503. Clients and proxies must allow enough time for the configured queue wait as well as application execution.
+
+## HTTP contract
+
+| Condition | Response |
+| --- | --- |
+| Admission allowed | Continue to authentication and the requested handler |
+| Bucket, rolling window, or waiting queue full | 429, `{"error":"Too many requests"}`, and `Retry-After` |
+| Queue deadline elapsed | 503, `{"error":"Rate limit queue timeout"}` |
+| Limiter stopped or queued decision failed | 503, `{"error":"Rate limiter unavailable"}` |
+| Async processing unavailable | 503, `{"error":"Asynchronous processing unavailable"}` |
+| Missing or invalid identity for an admitted `/api/*` request | 401, `{"error":"Unauthorized"}` |
+
+Limiter-generated error responses use JSON, UTF-8, and `Cache-Control: no-store`. `Retry-After` rounds upward to positive whole seconds. It is advisory: another caller may take the next available admission.
+
+### Identity and endpoints
+
+Send an email address as the bearer token:
+
+```sh
+curl -H 'Authorization: Bearer user@example.com' \
+  'http://localhost:8080/api/contacts?limit=10'
 ```
 
-`ManualScheduler` is shared unit-test support. Configuration binding tests remain in `unittest`; tests that start an embedded server or the full application belong to `integrationtest`. Both categories continue to run with `./mvnw test`; Maven execution phases are unchanged.
+`AuthFilter` validates the email format and exposes it as the request's user identity. `AuthInterceptor` requires that identity for every `/api/*` route, including `/api/auth/token`. The token endpoint confirms the supplied identity; it does not issue a signed credential. Repository queries access shared records rather than filtering data by caller identity. Activity records use the identity for attribution.
+
+| Method | Path | Behavior |
+| --- | --- | --- |
+| GET | `/health` | Health response; identity optional, rate admission required |
+| POST | `/api/auth/token` | Return authenticated identity and status |
+| GET | `/api/contacts` | Cursor-paginated contacts; default limit 50, valid range 1–100 |
+| GET | `/api/contacts/{id}` | Read one contact |
+| POST | `/api/contacts` | Create a contact |
+| PUT | `/api/contacts/{id}` | Update a contact |
+| DELETE | `/api/contacts/{id}` | Delete a contact |
+| POST | `/api/contacts/import` | Import a JSON array of at most 10,000 contacts |
+| GET | `/api/contacts/export` | Export contacts as CSV |
+| GET | `/api/files` | List file metadata |
+| POST | `/api/files` | Upload multipart field `file` |
+| GET | `/api/files/{id}` | Download file content |
+| GET | `/api/reports/activity` | Activity report; optional `since=YYYY-MM-DD`, default last 30 days |
+
+Contact pagination orders by `created_at DESC, id DESC`. The response supplies `next_page_token` when another page exists; pass it back as `page_token`. Invalid page tokens return 400. Limits outside 1–100 fall back to 50.
+
+## Persistence and consistency
+
+`DataSourceConfig` creates the data and file directories and applies `schema.sql` during initialization. SQLite stores contacts, file metadata, and activity records. File content is stored under generated IDs in `app.data-dir/files`.
+
+`FileRepository` removes partially written content after an I/O failure and removes content if metadata insertion fails. The filesystem and SQLite remain separate persistence boundaries. CRM writes and subsequent activity logging are separate repository operations, and contact import performs individual inserts without an enclosing transaction. A failure can therefore leave an operation partially applied. Contact export loads all matching contacts before writing CSV; it is not a bounded-memory database stream.
+
+## Observability
+
+Admission transitions log at INFO with `event=rate_limit_decision`. Each event includes a generated request ID, original request time, decision time, HTTP method, strategy and configured rate, outcome and reason, retry and waiting durations, and an immutable state snapshot. Bodies, query strings, bearer tokens, and caller identities are excluded from these decision events.
+
+Immediate attempts emit a terminal decision. Waiting attempts emit ENQUEUED followed by ALLOWED, TIMED_OUT, CANCELED, or STOPPED. A full queue emits RATE_LIMITED. Events for one attempt retain the same request ID. Snapshot fields describe debt, rolling-window occupancy, or queue/token state; time fields identify their units.
+
+Instrumented public methods and constructors in the rate-limit feature and configuration also emit INFO records with `event=method_invocation`. Filter by event type when counting admissions. Observer failures log WARN and preserve the selected decision. Scheduler rejection and exceptional queued completion log ERROR; servlet timeout and async failures log WARN. An already completed async context is logged at DEBUG. Log retention and throughput must accommodate decision and invocation volume during overload.
+
+## Tests and operating boundaries
+
+`src/test/java/unittest` contains algorithm, configuration, filter, and logging tests. `src/test/java/integrationtest` contains application and embedded HTTP tests. Both categories run in the Maven test phase with `./mvnw test`.
+
+Algorithm tests inject manual time and scheduling to exercise refill, expiration boundaries, FIFO ordering, cancellation, concurrent admission, and shutdown. Filter tests exercise response mapping and async races. Embedded Tomcat tests exercise shared quotas, authentication, and queued redispatch. Tests disable the populated-database startup check where necessary.
+
+The deployment boundary is one application process with local database and file storage. The global quota offers no per-client isolation and no coordination across replicas. Queue mode bounds waiting entries while retaining servlet resources for each waiter. Rate limits provide admission control; resource sizing must also account for execution time, concurrent handlers, database access, uploads, and response buffering.
