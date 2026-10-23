@@ -13,7 +13,7 @@ import java.io.IOException;
 import java.util.regex.Pattern;
 
 @Component
-@Order(1)
+//@Order(1)
 public class AuthFilter implements Filter {
 
     private static final Pattern EMAIL_PATTERN = Pattern.compile(
